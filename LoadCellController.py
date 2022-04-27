@@ -13,7 +13,7 @@ class LoadCellController:
 
         self.DT = 27
         self.SCK = 17
-        self.DRONE_WEIGHT = 100
+        self.DRONE_WEIGHT = 135
         self.WEIGHT_DELIMETER = 283
 
     def readCount(self):

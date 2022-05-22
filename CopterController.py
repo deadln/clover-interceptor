@@ -13,7 +13,7 @@ import random
 from enum import Enum
 
 
-node_name = "copter_node"
+node_name = "CopterController"
 
 class CopterController():
     def __init__(self):

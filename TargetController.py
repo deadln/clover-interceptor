@@ -11,7 +11,7 @@ import numpy as np
 
 class TargetController:
     def __init__(self):
-        rospy.init_node('target_node')
+        rospy.init_node('TargetController')
 
         self.telemetry = Telemetry()
         self.bridge = CvBridge()
@@ -45,7 +45,7 @@ class TargetController:
     # Позиция, получаемая из телеметрии и преобразуемая в numpy.array
     def get_position(self, frame_id='aruco_map'):
         return np.array([self.telemetry.x, self.telemetry.y, self.telemetry.z])
-
+    # Получение телеметрии
     def telemetry_callback(self, message):
         message = message.data.split()
         self.telemetry.x = float(message[0])
@@ -54,7 +54,7 @@ class TargetController:
         self.telemetry.roll = float(message[3])
         self.telemetry.pitch = float(message[4])
         self.telemetry.yaw = float(message[5])
-
+    # Получение карты глубин
     def depth_image_callback(self, message):
         def convert_depth_image(ros_image):
             depth_image = self.bridge.imgmsg_to_cv2(ros_image, desired_encoding="passthrough")
@@ -64,7 +64,7 @@ class TargetController:
         self.depth_images.insert(0, {'timestamp': {'secs': message.header.stamp.secs, 'nsecs': message.header.stamp.nsecs},
                                   'image': convert_depth_image(message)})
 
-
+    # Определение положения цели
     def target_callback(self, message):
         # Функция рисует целеуказатель на карте глубин
         def draw_cross(img, x, y):
@@ -141,7 +141,7 @@ class TargetController:
                 print("CONSECUTIVE DETECTIONS:", self.consecutive_detections)
                 self.consecutive_detections = 0
             return
-        # Поиск карты глубин, соответствующей
+        # Поиск карты глубин, соответствующей кадру сообщения
         i = 0
         while i < len(self.depth_images) and self.depth_images[i]['timestamp']['secs'] > secs:
             i += 1
@@ -158,7 +158,7 @@ class TargetController:
             if abs(self.depth_images[i]['timestamp']['nsecs'] - nsecs) < abs(
                     self.depth_images[min_i]['timestamp']['nsecs'] - nsecs):
                 min_i = i  # self.depth_images[min_i]['image'] - нужная карта глубины
-
+        # Вычисление локальных координат цели x_local, y_local, z_local
         z_local = get_min_range(self.depth_images[min_i]['image'], x_pix, y_pix)
         self.depth_debug.publish(
             self.bridge.cv2_to_imgmsg(draw_cross(self.depth_images[min_i]['image'] * 100, x_pix, y_pix)))
@@ -169,14 +169,13 @@ class TargetController:
         y_local = -1 * (y_pix - 240) / 480 * h  # (h / 2)
         # Дебаг вывод цели относительно точки (0,0,0)
         point = Point32(x_local, z_local, y_local)
-        # point.x, point.y, point.z = x_local, z_local, y_local
         cloud = PointCloud()
         cloud.header.stamp = rospy.Time.now()
         cloud.header.frame_id = "map"
         cloud.points.append(point)
         self.target_local_debug.publish(cloud)
 
-        # Перевод в координаты в пространстве
+        # Перевод в глобальные координаты в пространстве
         telemetry = self.get_telemetry()
         x_norm = np.array([1, 0, 0])
         y_norm = np.array([0, 1, 0])
@@ -207,9 +206,7 @@ class TargetController:
 
         target_position = x_global_vector * x_local + y_global_vector * y_local + z_global_vector * z_local
         target_position += self.get_position()
-        # print("TARGET POSITION", target_position)
 
-        # self.target_position.publish(Point32(target_position[0], target_position[1], target_position[2]))
         self.target_position.publish(f"{target_position[0]} {target_position[1]} {target_position[2]} {x_pix} {y_pix}")
         self.target_detections = self.target_detections[:min(len(self.target_detections), self.DEPTH_QUEUE_SIZE)]
         self.target_detections.append(
@@ -218,7 +215,6 @@ class TargetController:
 
         # Дебаг вывод координат цели в пространстве
         point = Point32(target_position[0], target_position[1], target_position[2])
-        # point.x, point.y, point.z = target_position[0], target_position[1], target_position[2]
         cloud = PointCloud()
         cloud.header.stamp = rospy.Time.now()
         cloud.header.frame_id = "aruco_map"

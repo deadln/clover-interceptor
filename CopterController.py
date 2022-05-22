@@ -19,7 +19,7 @@ class CopterController():
     def __init__(self):
         rospy.init_node(node_name)
         rospy.loginfo(node_name + " started")
-
+        # Сервисы Клевера
         self.__get_telemetry__ = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
         self.__navigate__ = rospy.ServiceProxy('navigate', srv.Navigate)
         self.__set_position__ = rospy.ServiceProxy('set_position', srv.SetPosition)
@@ -27,7 +27,7 @@ class CopterController():
         self.__land__ = rospy.ServiceProxy('land', Trigger)
 
         self.bridge = CvBridge()
-
+        # Константы, отвечающие за логику работы системы
         self.FREQUENCY = 5
         self.DEPTH_QUEUE_SIZE = 500
         self.CAMERA_ANGLE_H = 1.5009831567151235
@@ -39,7 +39,7 @@ class CopterController():
         self.SUSPICION_TRIGGER_COUNT = 10
         self.PURSUIT_TRIGGER_COUNT = 15
 
-
+        # Константы, связанные с полётом
         self.X_NORM = np.array([1, 0, 0])
         self.SPIN_TIME = 8
         self.SPIN_RATE = 2 * math.pi / self.SPIN_TIME
@@ -49,6 +49,8 @@ class CopterController():
         self.PATROL_TARGET_BORDER_BIAS = 0.5
 
         # TODO: парсить данные о полётной зоне из txt или launch файла
+        # Переменные системы
+        # Зона патрулирования и запретная зона
         self.low_left_corner = np.array([0.5, 0.5, 0.5])
         self.up_right_corner = np.array([7.0, 4.8, 3.2])
         self.low_left_corner_restricted = np.array([0, 0, 0])
@@ -65,19 +67,14 @@ class CopterController():
         self.detection_pixel = Point32(0, 0, 0)
         self.pursuit_target_detections = []
         self.depth_images = []
-
-        # self.depth_debug = rospy.Publisher("debug/depth", Image, queue_size=10)
-        # self.target_local_debug = rospy.Publisher("debug/target_position_local", PointCloud, queue_size=10)
-        # self.target_global_debug = rospy.Publisher("debug/target_position_global", PointCloud, queue_size=10)
-        # rospy.Subscriber('drone_detection/target', String, self.target_callback)
+        # Создание топиков и подписка на них
         self.telemetry_pub = rospy.Publisher("/telemetry_topic", String, queue_size=10)
         rospy.Subscriber("drone_detection/target_position", String, self.target_callback)
         rospy.Subscriber("load_cell/catch", Bool, self.catch_callback)
-        # rospy.Subscriber('drone_detection/false_target', String, self.target_callback_test)  # TODO: протестировать реакцию на ложную цель
-        # rospy.Subscriber('/camera/depth/image_rect_raw', Image, self.depth_image_callback)
 
         rospy.on_shutdown(self.on_shutdown_cb)
 
+    # Обёртки для сервисов Клевера, принимающие вектора Numpy
     def get_telemetry(self, frame_id='aruco_map'):
         if frame_id == 'aruco_map':
             return self.telemetry
@@ -102,6 +99,7 @@ class CopterController():
     def land(self):
         return self.__land__()
 
+    # Главный цикл программы
     def offboard_loop(self):
         self.takeoff()
         self.telemetry = self.__get_telemetry__(frame_id='aruco_map')
@@ -112,7 +110,7 @@ class CopterController():
             self.telemetry = self.__get_telemetry__(frame_id='aruco_map')
             self.telemetry_pub.publish(
                 f"{self.telemetry.x} {self.telemetry.y} {self.telemetry.z} {self.telemetry.roll} {self.telemetry.pitch} {self.telemetry.yaw}")
-            if self.telemetry.cell_voltage < self.CRITICAL_CELL_VOLTAGE:
+            if self.telemetry.cell_voltage < self.CRITICAL_CELL_VOLTAGE:  # Экстренная посадка при разряженной батарее
                 rospy.logfatal("CRITICAL CELL VOLTAGE: {}".format(self.telemetry.cell_voltage))
                 rospy.signal_shutdown("Cell voltage is too low")
             self.check_state_duration()
@@ -120,28 +118,15 @@ class CopterController():
                 self.return_to_patrol_zone()
                 continue
             if self.state == State.PATROL_NAVIGATE:  # Полёт к точке патрулирования
-                if self.patrol_target is None:
+                if self.patrol_target is None:  # Назначение точки патрулирования
                     self.set_patrol_target()
                     rospy.loginfo(f"New patrol target {self.patrol_target}")
                 else:
                     # Полёт напрямую
-                    # print("YAW", self.get_yaw_angle(self.X_NORM, self.patrol_target - self.get_position()) / (math.pi / 180))
                     self.navigate(self.patrol_target, speed=self.PATROL_SPEED, yaw=self.get_yaw_angle(self.X_NORM, self.patrol_target - self.get_position()))
-                    # Полёт с вращением
-                    # self.navigate(self.patrol_target, speed=self.PATROL_SPEED, yaw=float('nan'), yaw_rate=self.SPIN_RATE)
                 if self.is_navigate_target_reached(target=self.patrol_target):  # Argument: target=self.patrol_target
                     rospy.loginfo("Patrol target reached")
                     self.patrol_target = None
-                    # self.state = "patrol_spin"
-
-            # if self.state == "patrol_spin":  # Вращение в точке патрулирования
-            #     if self.spin_start is None:
-            #         self.spin_start = rospy.get_time()
-            #         self.navigate(self.get_position(), yaw=float('nan'), yaw_rate=self.SPIN_RATE)
-            #     elif rospy.get_time() - self.spin_start >= self.SPIN_TIME:
-            #         self.spin_start = None
-            #         self.state = "patrol_navigate"
-
             if self.state == State.PURSUIT:  # Состояние преследования цели, которая однозначно обнаружена
                 if self.pursuit_target is None:
                     self.set_state(State.PATROL_NAVIGATE)
@@ -158,7 +143,7 @@ class CopterController():
                 suspicion_point = self.get_position() + suspicion_vector
                 self.navigate(suspicion_point, speed=self.PATROL_SPEED, yaw=self.get_yaw_angle(self.X_NORM, suspicion_point - self.get_position()))
 
-            if self.state == State.SEARCH:  # TODO: Поиск утерянной цели
+            if self.state == State.SEARCH:
                 if self.up_sector(self.detection_pixel.x, self.detection_pixel.y):
                     print("TARGET LOST AT UP SECTOR")
                     if self.left_sector(self.detection_pixel.x, self.detection_pixel.y):
@@ -178,21 +163,19 @@ class CopterController():
                         yaw_rate = -self.SPIN_RATE
                         print("SPIN RIGHT")
                     self.set_velocity(np.array([0, 0, -0.2]), yaw=float('nan'), yaw_rate=yaw_rate)
-                # self.navigate(self.get_position())
 
             if self.state == State.RTB:  # Возвращение на базу
                 self.navigate_wait(self.base)
                 rospy.signal_shutdown("Mission complete")
 
             rate.sleep()
-
+    # Взлёт
     def takeoff(self):
         self.set_velocity(np.array([0, 0, 0.2]), yaw=float('nan'), frame_id="body", auto_arm=True)
-        # self.navigate(frame_id="", auto_arm = True)
         rospy.sleep(0.5)
         self.set_state(State.PATROL_NAVIGATE)
         rospy.loginfo("Takeoff complete")
-
+    # Перемещение с ожиданием прилёта в точку
     def navigate_wait(self, target, yaw=float('nan'), speed=0.2, frame_id='aruco_map', auto_arm=False, tolerance=0.3):
         self.navigate(target, yaw=yaw, speed=speed, frame_id=frame_id, auto_arm=auto_arm)
 
@@ -203,7 +186,7 @@ class CopterController():
             if self.is_navigate_target_reached(tolerance):
                 break
             rospy.sleep(0.2)
-
+    # Назначение точки патрулирования
     def set_patrol_target(self):
         llc = self.low_left_corner + np.ones(3) * self.PATROL_TARGET_BORDER_BIAS
         urc = self.up_right_corner - np.ones(3) * self.PATROL_TARGET_BORDER_BIAS
@@ -213,7 +196,7 @@ class CopterController():
             self.patrol_target = np.array([random.uniform(llc[0], urc[0]),
                                            random.uniform(llc[1], urc[1]),
                                            random.uniform(llc[2], urc[2])])
-
+    # Получить угол рысканья для поворота дрона
     def get_yaw_angle(self, vector_1, vector_2):
         unit_vector_1 = vector_1 / np.linalg.norm(vector_1)
         unit_vector_2 = vector_2 / np.linalg.norm(vector_2)
@@ -222,7 +205,7 @@ class CopterController():
         if vector_2[1] < 0:
             angle *= -1
         return angle
-
+    # Возврат в зону патрулирования
     def return_to_patrol_zone(self):
         position = self.get_position()
         velocity = np.zeros(3)
@@ -231,39 +214,35 @@ class CopterController():
         velocity *= self.INTERCEPTION_SPEED
         self.set_velocity(velocity)
         rospy.logwarn(f"OUT OF PATROL ZONE. RETURN VECTOR {velocity}")
-
+    # Смена состояния
     def set_state(self, state):
         self.state = state
         rospy.loginfo("Changed state to " + state.value)
         if state == State.SUSPICION or state == State.PURSUIT or state == State.SEARCH:
             self.state_timestamp = rospy.get_time()
-
+    # Определение факта достижения цели, заданной через navigate
     def is_navigate_target_reached(self,  tolerance=0.3, target=None):
         if target is None:
             position = self.get_position(frame_id='navigate_target')
         else:
             position = target - self.get_position()
         return np.linalg.norm(position) < tolerance
-        # return math.sqrt(telem.x ** 2 + telem.y ** 2 + telem.z ** 2) < tolerance
-
+    # Точка внутри патрульной зоны
     def is_inside_patrol_zone(self):
         position = self.get_position()
         return all(position >= self.low_left_corner) and all(position <= self.up_right_corner)
-
+    # Точка внутри запретной зоны
     def is_inside_restricted_zone(self):
         return all(self.patrol_target >= self.low_left_corner_restricted) and all(self.patrol_target <= self.up_right_corner_restricted)
-
+    # Проверка длительности состояний
     def check_state_duration(self):
         if self.state == State.SUSPICION and rospy.get_time() - self.state_timestamp > self.SUSPICION_DURATION:
-            # self.state = State.PATROL_NAVIGATE
             self.set_state(State.PATROL_NAVIGATE)
         elif self.state == State.PURSUIT and rospy.get_time() - self.state_timestamp > self.PURSUIT_DURATION:
-            # self.state = State.SEARCH
             self.set_state(State.SEARCH)
         elif self.state == State.SEARCH and rospy.get_time() - self.state_timestamp > self.SEARCH_DURATION:
-            # self.state = State.PATROL_NAVIGATE
             self.set_state(State.PATROL_NAVIGATE)
-
+    # Функции для определения сектора на изображении в котором последний раз была видна цель
     def y1(self, x):
         return int(0.75 * x)
 
@@ -285,108 +264,9 @@ class CopterController():
     def left_sector(self, x, y):
         return x <= 320
         # return self.y1(x) <= y <= self.y2(x)
-
-    # def depth_image_callback(self, message):
-    #     def convert_depth_image(ros_image):
-    #         depth_image = self.bridge.imgmsg_to_cv2(ros_image, desired_encoding="passthrough")
-    #         depth_array = np.array(depth_image, dtype=np.float32) * 0.001  # расстояние в метрах 0.001
-    #         return depth_array
-    #         # im = Image.fromarray(depth_array)
-    #         # im = im.convert("L")
-    #         # idx = str(i).zfill(4)
-    #         # im.save(root+"/depth/frame{index}.png".format(index = idx))
-    #         # i += 1
-    #         # print("depth_idx: ", i)
-    #     self.depth_images = self.depth_images[:min(len(self.depth_images), self.DEPTH_QUEUE_SIZE)]
-    #     self.depth_images.append({'timestamp': {'secs': message.header.stamp.secs, 'nsecs': message.header.stamp.nsecs},
-    #                               'image': convert_depth_image(message)})
-    #
-    # def target_callback(self, message):
-    #     def draw_cross(img, x, y):
-    #         CROSS_HALF = 2
-    #         CROSS_HALF_LEN = 30
-    #         for i in range(y - CROSS_HALF, y + CROSS_HALF + 1):
-    #             for j in range(x - CROSS_HALF, x + CROSS_HALF + 1):
-    #                 # Up
-    #                 k = 0
-    #                 while i - k >= 0 and k < CROSS_HALF_LEN:
-    #                     img[i - k][j] = 1000
-    #                     k += 1
-    #                 # Down
-    #                 k = 0
-    #                 while i + k < 480 and k < CROSS_HALF_LEN:
-    #                     img[i + k][j] = 1000
-    #                     k += 1
-    #                 # Left
-    #                 k = 0
-    #                 while j - k >= 0 and k < CROSS_HALF_LEN:
-    #                     img[i][j - k] = 1000
-    #                     k += 1
-    #                 # Right
-    #                 k = 0
-    #                 while j + k < 640 and k < CROSS_HALF_LEN:
-    #                     img[i][j + k] = 1000
-    #                     k += 1
-    #         return img
-    #
-    #     def get_min_range(img, x, y):
-    #         SEARCH_RADIUS = 20
-    #         x_start = max(x - SEARCH_RADIUS, 0)
-    #         x_end = min(x + SEARCH_RADIUS, 639)
-    #         y_start = max(y - SEARCH_RADIUS, 0)
-    #         y_end = min(y + SEARCH_RADIUS, 479)
-    #
-    #         min_distance = 10
-    #         for i in range(y_start, y_end + 1):
-    #             for j in range(x_start, x_end + 1):
-    #                 if img[i][j] > 0 and img[i][j] < min_distance:
-    #                     min_distance = img[i][j]
-    #         return min_distance
-    #
-    #
-    #     # TODO: 1. Сделать поиск карты глубин, соответствующей данному timestamp-у +
-    #     # TODO: 2. Сделать перевод координат цели на изображении в локальные координаты
-    #     # TODO: 3. Сделать перевод координат цели на изображении в глобальные координаты
-    #     message = message.data.split()
-    #     secs = int(message[2])
-    #     nsecs = int(message[3])
-    #     i = 0
-    #     while i < len(self.depth_images) and self.depth_images[i]['timestamp']['secs'] > secs:
-    #         i += 1
-    #     if i == len(self.depth_images):
-    #         return
-    #     start = i
-    #     while i < len(self.depth_images) and self.depth_images[i]['timestamp']['secs'] == secs:
-    #         i += 1
-    #     end = i
-    #     if start >= len(self.depth_images) or end >= len(self.depth_images):
-    #         return
-    #     min_i = start
-    #     for i in range(start, end):
-    #         if abs(self.depth_images[i]['timestamp']['nsecs'] - nsecs) < abs(self.depth_images[min_i]['timestamp']['nsecs'] - nsecs):
-    #             min_i = i  # self.depth_images[i]['image'] - нужная карта глубины
-    #     # self.depth_debug.publish(self.bridge.cv2_to_imgmsg(self.depth_images[i]['image']))
-    #
-    #     x_pix = int(message[0])
-    #     y_pix = int(message[1])
-    #     z_local = get_min_range(self.depth_images[min_i]['image'], x_pix, y_pix)
-    #     self.depth_debug.publish(self.bridge.cv2_to_imgmsg(draw_cross(self.depth_images[min_i]['image'] * 100, x_pix, y_pix)))
-    #
-    #     w = 2 * math.sqrt(pow(z_local / math.cos(self.CAMERA_ANGLE_H / 2), 2) - pow(z_local, 2))
-    #     h = 2 * math.sqrt(pow(z_local / math.cos(self.CAMERA_ANGLE_V / 2), 2) - pow(z_local, 2))
-    #     x_local = (x_pix - 320) / 640 * w  # (w / 2)
-    #     y_local = -1 * (y_pix - 240) / 480 * h  # (h / 2)
-    #
-    #     point = Point32()
-    #     point.x, point.y, point.z = x_local, z_local, y_local
-    #     cloud = PointCloud()
-    #     cloud.header.stamp = rospy.Time.now()
-    #     cloud.header.frame_id = "map"
-    #     cloud.points.append(point)
-    #     self.target_local_debug.publish(cloud)
-
+    # Обработка сообщения о цели
     def target_callback(self, message):
-        def is_in_net_range():
+        def is_in_net_range():  # Цель находится напротив сетки
             w_radius = 35
             w_left = 320 - w_radius
             w_right = 320 + w_radius
@@ -421,6 +301,7 @@ class CopterController():
                 self.suspicion_target = target
                 rospy.loginfo("Suspicious detect at " + str(self.suspicion_target))
 
+    # Обработка сообщения ложной цели
     def target_callback_test(self, message):
         if message.data == '':
             self.state = 'patrol_navigate'
@@ -430,20 +311,19 @@ class CopterController():
         message = message.data.split()
         self.pursuit_target = np.array(list(map(float, message)))
         self.state = 'pursuit'
-
+    # Обработка сообщения о том что цель была поймана
     def catch_callback(self, message):
         self.set_state(State.RTB)
-
+    # Действия при выключении
     def on_shutdown_cb(self):
         rospy.logwarn("shutdown")
         self.land()
         rospy.loginfo("landing complete")
         exit(0)
 
-
+# Перечисление состояний системы
 class State(Enum):
     PATROL_NAVIGATE = "PATROL_NAVIGATE"
-    PATROL_SPIN = "PATROL_SPIN"
     SUSPICION = "SUSPICION"
     PURSUIT = "PURSUIT"
     SEARCH = "SEARCH"
@@ -458,9 +338,3 @@ if __name__ == '__main__':
         pass
 
     rospy.spin()
-
-# TODO:
-# 1. Сделать запретную зону +
-# 2. Затестить обнаружение цели и перехват +
-# 3. Сделать поиск цели после потери +
-# 4. Сделать определение момента поимки цели и возврат на базу

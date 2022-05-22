@@ -10,13 +10,19 @@ from cv_bridge import CvBridge
 import numpy as np
 import math
 import random
+import argparse
 from enum import Enum
 
 
 node_name = "CopterController"
 
 class CopterController():
-    def __init__(self):
+    def __init__(self,
+                 low_left_corner=np.array([0.5, 0.5, 0.5]),
+                 up_right_corner=np.array([7.0, 4.8, 3.2]),
+                 low_left_corner_restricted=np.array([0, 0, 0]),
+                 up_right_corner_restricted=np.array([2.0, 2.0, 3.2]),
+                 base=None):
         rospy.init_node(node_name)
         rospy.loginfo(node_name + " started")
         # Сервисы Клевера
@@ -48,14 +54,13 @@ class CopterController():
         self.DETECTION_DIAPASON_SEC = 1.0
         self.PATROL_TARGET_BORDER_BIAS = 0.5
 
-        # TODO: парсить данные о полётной зоне из txt или launch файла
         # Переменные системы
         # Зона патрулирования и запретная зона
-        self.low_left_corner = np.array([0.5, 0.5, 0.5])
-        self.up_right_corner = np.array([7.0, 4.8, 3.2])
-        self.low_left_corner_restricted = np.array([0, 0, 0])
-        self.up_right_corner_restricted = np.array([2.0, 2.0, 3.2])
-        self.base = None
+        self.low_left_corner = low_left_corner
+        self.up_right_corner = up_right_corner
+        self.low_left_corner_restricted = low_left_corner_restricted
+        self.up_right_corner_restricted = up_right_corner_restricted
+        self.base = base
         self.telemetry = None
         self.state = ""
         self.state_timestamp = rospy.get_time()
@@ -100,10 +105,11 @@ class CopterController():
         return self.__land__()
 
     # Главный цикл программы
-    def offboard_loop(self):
+    def offboard_loop(self, ):
         self.takeoff()
         self.telemetry = self.__get_telemetry__(frame_id='aruco_map')
-        self.base = self.get_position() + np.array([0, 0, 0.2])
+        if self.base is None:
+            self.base = self.get_position() + np.array([0, 0, 0.2])
 
         rate = rospy.Rate(self.FREQUENCY)
         while not rospy.is_shutdown():
@@ -328,10 +334,46 @@ class State(Enum):
     PURSUIT = "PURSUIT"
     SEARCH = "SEARCH"
     RTB = "RTB"
-
+# Парсинг аргументов из командной строки
+def parse_opt():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--patrol-zone', type=str, default='0.5 0.5 0.5 7.0 4.8 3.2', help='"X1 Y1 Z1 X2 Y2 Z2" (1 - low left corner, 2 - up right corner) of patrol zone')
+    parser.add_argument('--restricted-zone', type=str, default='0 0 0 2.0 2.0 3.2', help='"X1 Y1 Z1 X2 Y2 Z2" (1 - low left corner, 2 - up right corner) of restricted zone')
+    parser.add_argument('--landing-zone', type=str, default='', help='"X Y" point for landing')
+    opt = parser.parse_args()
+    return opt
+# Преобразование аргументов
+def convert_arguments(opt):
+    print(opt)
+    res = {}
+    if 'patrol_zone' in opt.keys():
+        patrol_zone = opt['patrol_zone'].split()
+        if len(patrol_zone) != 6:
+            raise ValueError('Wrong arguments for patrol zone')
+        res['low_left_corner'] = np.array(list(map(float, patrol_zone[:3])))
+        res['up_right_corner'] = np.array(list(map(float, patrol_zone[3:])))
+    if 'restricted_zone' in opt.keys():
+        restricted_zone = opt['restricted_zone'].split()
+        if len(restricted_zone) != 6:
+            raise ValueError('Wrong arguments for restricted zone')
+        res['low_left_corner_restricted'] = np.array(list(map(float, restricted_zone[:3])))
+        res['up_right_corner_restricted'] = np.array(list(map(float, restricted_zone[3:])))
+    if 'landing_zone' in opt.keys():
+        landing_zone = opt['landing_zone'].split()
+        print(landing_zone)
+        if len(landing_zone) == 0:
+            res['base'] = None
+        else:
+            if len(landing_zone) != 2:
+                raise ValueError('Wrong arguments for land zone')
+            xy = list(map(float, landing_zone))
+            res['base'] = np.array([xy[0], xy[1], 1.5])
+    return res
 
 if __name__ == '__main__':
-    controller = CopterController()
+    opt = parse_opt()
+    opt = convert_arguments(vars(opt))
+    controller = CopterController(**opt)
     try:
         controller.offboard_loop()
     except rospy.ROSInterruptException:
